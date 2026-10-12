@@ -317,11 +317,14 @@ const expectOptionalContextFailure = (
           ? "AnalysisCancelledError"
           : "ProviderAdapterError",
     );
-    if (scenario === "cleanup-failure") {
-      expect(error).toBeInstanceOf(ProviderCleanupError);
+    if (scenario === "cleanup-failure" || scenario === "invalid-context") {
+      if (scenario === "cleanup-failure")
+        expect(error).toBeInstanceOf(ProviderCleanupError);
       expect(projected).toMatchObject({
         details: {
-          partial_observation: { debugger: { status: "available" } },
+          partial_observation: {
+            debugger: { status: "unavailable", requested: true },
+          },
         },
       });
     }

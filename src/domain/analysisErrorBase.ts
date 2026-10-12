@@ -110,7 +110,10 @@ import type {
 } from "./adb/adbDeviceAnalysis.js";
 import type { NativeUiObservationResult } from "./native/nativeUiObservation.js";
 import type { BinaryLayout } from "./native/binaryLayout.js";
-import type { RecordedCrash } from "./native/recordedCrash.js";
+import type {
+  RecordedCrash,
+  RecordedCrashPartialObservation,
+} from "./native/recordedCrash.js";
 
 /** Provider-neutral evidence collected before a typed analysis failure. */
 export type AnalysisPartialObservation =
@@ -127,6 +130,7 @@ export type AnalysisPartialObservation =
   | Evidence
   | BinaryLayout
   | RecordedCrash
+  | RecordedCrashPartialObservation
   | AndroidPartialObservation
   | FirmwarePartialObservation
   | NativeUiObservationResult
