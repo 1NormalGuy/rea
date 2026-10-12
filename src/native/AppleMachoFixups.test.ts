@@ -471,6 +471,45 @@ describe("chained pointer membership", () => {
   });
 });
 describe("malformed chained pointer coverage", () => {
+  it("locates a failed later page without discarding established pointer facts", () => {
+    const data = chainedData(1);
+    data.copyWithin(66, 64, 128);
+    data.writeUInt32LE(66, 8);
+    data.writeUInt32LE(74, 12);
+    data.writeUInt32LE(26, 40);
+    data.writeUInt16LE(0x1000, 44);
+    data.writeUInt16LE(2, 60);
+    data.writeUInt16LE(8, 64);
+    data.writeBigUInt64LE(0x1234n, 0x4008);
+    data.writeBigUInt64LE(field(0xfffn, 51), 0x5008);
+    const fixups = parsePointerFixups(
+      data,
+      { chained: { offset: 0, size: 160 }, binds: [], rebases: [], dylibs: [] },
+      SEGMENTS,
+      BASE,
+    );
+    expect(fixups.issues).toEqual([
+      {
+        facet: "pointer_fixups",
+        code: "chained_pointer_walk_failed",
+        message: "Chained pointer link leaves its file-backed page",
+        location: "0x100005000",
+      },
+    ]);
+    expect(fixups.decode(BASE + 0x4008n, data.readBigUInt64LE(0x4008))).toEqual(
+      {
+        kind: "rebase",
+        target: BASE + 0x1234n,
+      },
+    );
+    expect(fixups.decode(BASE + 0x5008n, data.readBigUInt64LE(0x5008))).toEqual(
+      {
+        kind: "rebase",
+        target: BASE,
+      },
+    );
+  });
+
   it.each(["link", "multi"])(
     "reports malformed %s chains without claiming complete fixups",
     (malformed) => {
