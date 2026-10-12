@@ -30,6 +30,28 @@ export class BinaryLayoutService {
     rawInput: unknown,
     options?: ExecutionOptions,
   ): Promise<Result<Evidence, AnalysisError>> {
+    return this.#inspect(rawInput, options, (input) =>
+      this.provider.inspect(input, options),
+    );
+  }
+
+  /** Complete the owned one-shot lifecycle before validating and publishing Evidence. */
+  inspectAndClose(
+    rawInput: unknown,
+    options?: ExecutionOptions,
+  ): Promise<Result<Evidence, AnalysisError>> {
+    return this.#inspect(rawInput, options, (input) =>
+      this.provider.inspectAndClose(input, options),
+    );
+  }
+
+  async #inspect(
+    rawInput: unknown,
+    options: ExecutionOptions | undefined,
+    inspect: (
+      input: Parameters<BinaryLayoutPort["inspect"]>[0],
+    ) => ReturnType<BinaryLayoutPort["inspect"]>,
+  ): Promise<Result<Evidence, AnalysisError>> {
     if (options?.signal?.aborted)
       return err(new AnalysisCancelledError(OPERATION));
     const input = inspectBinaryLayoutInputSchema.safeParse(rawInput);
@@ -49,7 +71,7 @@ export class BinaryLayoutService {
           },
         ]),
       );
-    const inspected = await this.provider.inspect(input.data, options);
+    const inspected = await inspect(input.data);
     if (!inspected.ok) return inspected;
     const diagnostics = binaryLayoutSchema.shape.diagnostics.safeParse(
       inspected.value.diagnostics,

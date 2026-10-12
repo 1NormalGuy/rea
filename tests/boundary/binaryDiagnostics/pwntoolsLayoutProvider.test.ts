@@ -115,14 +115,25 @@ it.runIf(!unsupportedHost)(
         };
       },
     );
+    onTestFinished(async () => {
+      cleanupAllowed = true;
+      await provider.close();
+    });
     const result = await provider.inspect({ path });
     if (result.ok) throw new Error("Expected compounded lifecycle failure");
     expect(result.error).toMatchObject({
       cleanupIncomplete: true,
       diagnostics: {
-        reason: "injected post-cleanup reporting failure",
-        previous_error: { failure_kind: "output-limit" },
-        captured_output: { truncated: true, stderr: "" },
+        primary_error: {
+          code: "unreadable_output",
+          details: { captured_output: { truncated: true, stderr: "" } },
+        },
+        cleanup_error: {
+          code: "cleanup_incomplete",
+          details: {
+            diagnostics: { reason: "injected post-cleanup reporting failure" },
+          },
+        },
       },
     });
     await expect(access(ownedPath)).resolves.toBeUndefined();
@@ -424,8 +435,11 @@ it.runIf(!unsupportedHost)(
         cleanupIncomplete: true,
         cleanupResources: [root],
         diagnostics: {
-          reason: "root cleanup failed",
-          previous_error: { category: "invalid_input" },
+          primary_error: { category: "invalid_input" },
+          cleanup_error: {
+            code: "cleanup_incomplete",
+            details: { diagnostics: { reason: "root cleanup failed" } },
+          },
         },
       },
     });

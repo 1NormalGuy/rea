@@ -8,6 +8,7 @@ import { RecordedCrashService } from "../../src/application/binaryDiagnostics/Re
 import { AnalysisOutputError } from "../../src/domain/analysisErrorCore.js";
 import { ProviderCleanupError } from "../../src/domain/providerCleanupError.js";
 import { err } from "../../src/domain/result.js";
+import { analysisErrorWithCleanupFailure } from "../../src/domain/analysisErrorCleanup.js";
 
 const exitCode = process.exitCode;
 afterEach(() => {
@@ -15,8 +16,8 @@ afterEach(() => {
   process.exitCode = exitCode;
 });
 
-it.each(["layout-returned", "recorded-rejected"] as const)(
-  "preserves primary diagnostics and cleanup resources through the public CLI: %s",
+it.each(["layout", "recorded"] as const)(
+  "projects the final owned outcome through the public CLI: %s",
   async (scenario) => {
     const primary = new AnalysisOutputError(
       "inspect_binary_layout",
@@ -34,26 +35,38 @@ it.each(["layout-returned", "recorded-rejected"] as const)(
       ["owned-process", "/retained/runtime"],
       { reason: "fixture process inspection still denied" },
     );
-    const close = vi.fn(() => Promise.reject(cleanup));
+    const inspectAndClose = vi.fn(async () =>
+      err(
+        analysisErrorWithCleanupFailure(
+          primary,
+          cleanup,
+          "inspect_binary_layout",
+        ),
+      ),
+    );
     const identity = {
       id: "fixture-decoder",
       name: "Fixture decoder",
       version: "1",
     };
-    if (scenario === "layout-returned")
+    if (scenario === "layout")
       vi.spyOn(composition, "createBinaryLayoutService").mockReturnValue(
         new BinaryLayoutService({
           identity,
-          inspect: () => Promise.resolve(err(primary)),
-          close,
+          inspect: () => {
+            throw new Error("CLI must request a terminal inspection");
+          },
+          inspectAndClose,
         }),
       );
     else
       vi.spyOn(composition, "createRecordedCrashService").mockReturnValue(
         new RecordedCrashService({
           identity,
-          inspect: () => Promise.reject(primary),
-          close,
+          inspect: () => {
+            throw new Error("CLI must request a terminal inspection");
+          },
+          inspectAndClose,
         }),
       );
 
@@ -61,7 +74,7 @@ it.each(["layout-returned", "recorded-rejected"] as const)(
     let stdout = "";
     await cli.serve(
       [
-        scenario === "layout-returned"
+        scenario === "layout"
           ? CLI_COMMANDS.inspectBinaryLayout
           : CLI_COMMANDS.inspectRecordedCrash,
         "/selected/fixture.elf",
@@ -92,7 +105,7 @@ it.each(["layout-returned", "recorded-rejected"] as const)(
         },
       },
     });
-    expect(close).toHaveBeenCalledOnce();
+    expect(inspectAndClose).toHaveBeenCalledOnce();
     expect(process.exitCode).toBe(1);
   },
 );

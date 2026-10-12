@@ -17,10 +17,7 @@ import {
   type RecordedCrash,
 } from "../../domain/native/recordedCrash.js";
 import { readStableArtifact } from "../../artifacts/readStableArtifact.js";
-import {
-  OwnedCommandFailure,
-  runOwnedCommand,
-} from "../../process/OwnedCommand.js";
+import { runOwnedCommand } from "../../process/OwnedCommand.js";
 import type { ProviderProcessSupervisor } from "../../process/ProviderProcess.js";
 import {
   capturedPwntoolsOutput,
@@ -168,6 +165,7 @@ export const inspectPwndbgCore = async ({
       {
         ...(options?.signal === undefined ? {} : { signal: options.signal }),
         ...(launcher === undefined ? {} : { launcher }),
+        retainCleanup: retainProcessCleanup,
       },
     );
     output = capturedPwntoolsOutput(execution);
@@ -224,11 +222,6 @@ export const inspectPwndbgCore = async ({
       );
     return { ...reply.value, diagnostics: output };
   } catch (cause: unknown) {
-    if (
-      cause instanceof OwnedCommandFailure &&
-      cause.cleanupOwner !== undefined
-    )
-      retainProcessCleanup(cause.cleanupOwner);
     if (
       options?.signal?.aborted &&
       (cause === options.signal.reason ||

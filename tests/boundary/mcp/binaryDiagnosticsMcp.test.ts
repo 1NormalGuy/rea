@@ -16,6 +16,9 @@ it("advertises exact valid schemas and records inline layout without a binary ta
   const value = binaryLayoutFixture();
   let providerClosed = false;
   const service = new BinaryLayoutService({
+    inspectAndClose(input, options) {
+      return this.inspect(input, options);
+    },
     identity: BINARY_LAYOUT_TEST_PROVIDER,
     inspect: () => Promise.resolve(ok(value)),
     close: async () => {

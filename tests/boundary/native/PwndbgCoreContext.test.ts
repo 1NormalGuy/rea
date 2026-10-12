@@ -115,11 +115,9 @@ it.skipIf(process.platform === "win32")(
         },
       }),
     ).rejects.toMatchObject({
-      cleanupIncomplete: true,
-      diagnostics: {
-        previous_error: { failure_kind: "output-limit" },
-        captured_output: { truncated: true },
-      },
+      _tag: "AnalysisOutputError",
+      cleanupIncomplete: false,
+      capturedOutput: { truncated: true },
     });
     if (owner === undefined || pid === undefined)
       throw new Error("Live debugger cleanup ownership was lost");

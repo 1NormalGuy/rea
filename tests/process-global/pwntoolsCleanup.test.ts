@@ -100,8 +100,11 @@ it.runIf(supportedHost)(
     expect(result.error).toMatchObject({
       cleanupIncomplete: true,
       diagnostics: {
-        previous_error: { failure_kind: "output-limit" },
-        captured_output: { truncated: true },
+        primary_error: {
+          code: "unreadable_output",
+          details: { captured_output: { truncated: true } },
+        },
+        cleanup_error: { code: "cleanup_incomplete" },
       },
     });
     if (pid === undefined)
@@ -171,9 +174,11 @@ it.runIf(supportedHost)(
     expect(result.error).toMatchObject({
       cleanupIncomplete: true,
       diagnostics: {
-        previous_error: {
+        primary_error: {
+          code: "execution_failure",
           details: { diagnostics: { stdout: "retained diagnostic" } },
         },
+        cleanup_error: { code: "cleanup_incomplete" },
       },
     });
     const refused = await provider.inspect({ path });
@@ -241,11 +246,17 @@ it.runIf(supportedHost)(
     expect(firstResult.error).not.toMatchObject({ cleanupIncomplete: true });
     expect(queuedResult).toMatchObject({
       ok: false,
-      error: { diagnostics: { reason: "Provider is closing" } },
+      error: {
+        _tag: "AnalysisCapabilityUnavailableError",
+        cleanupIncomplete: false,
+      },
     });
     expect(lateResult).toMatchObject({
       ok: false,
-      error: { diagnostics: { reason: "Provider is closing" } },
+      error: {
+        _tag: "AnalysisCapabilityUnavailableError",
+        cleanupIncomplete: false,
+      },
     });
     await closing;
     expect(launches).toBe(1);

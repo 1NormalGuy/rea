@@ -10,7 +10,10 @@ import {
 } from "../../support/workspace/workspaceFixture.js";
 import { PwntoolsRecordedCrashProvider } from "../../../src/native/pwntools/PwntoolsRecordedCrashProvider.js";
 import { PWNTOOLS_PROVIDER_IDENTITY } from "../../../src/native/pwntools/PwntoolsRelease.js";
-import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
+import {
+  spawnOwnedProviderProcess,
+  type SpawnedOwnedProviderProcess,
+} from "../../../src/process/ProviderProcess.js";
 import { cleanupOwnedProcessGroup } from "../../../src/process/ProcessOwnership.js";
 import { waitForProviderProcessReady } from "../../fixtures/providerProcess.js";
 import {
@@ -27,6 +30,19 @@ const requestSchema = z.object({
   reply_path: z.string(),
 });
 const host = process.platform === "linux" && process.arch === "x64";
+
+const withCleanupGate = (
+  launched: SpawnedOwnedProviderProcess,
+  cleanupAllowed: () => boolean,
+): SpawnedOwnedProviderProcess => ({
+  ...launched,
+  cleanup: async () => {
+    const result = await cleanupOwnedProcessGroup(launched.ownership);
+    if (!cleanupAllowed())
+      throw new Error("source-owned post-cleanup reporting failure");
+    return result;
+  },
+});
 
 it
   .runIf(host)
@@ -133,6 +149,7 @@ it
     "invalid-context",
     "cancelled",
     "cleanup-failure",
+    "decoder-cleanup-failure",
   ] as const)(
   "owns optional context from the same snapshot: %s",
   async (scenario) => {
@@ -181,11 +198,14 @@ it
               value: raw,
             }),
           );
-          return spawnOwnedProviderProcess({
+          const launched = await spawnOwnedProviderProcess({
             ...spawn,
             command: process.execPath,
             arguments: ["-e", "process.stdout.write('basic stage diagnostic')"],
           });
+          return scenario === "decoder-cleanup-failure"
+            ? withCleanupGate(launched, () => cleanupAllowed)
+            : launched;
         }
         expect(request.snapshot_path).toBe(snapshotPath);
         const context = recordedCrashDebuggerFixture();
@@ -211,17 +231,9 @@ it
           await waitForProviderProcessReady(launched.process);
           setImmediate(() => controller.abort());
         }
-        if (scenario === "cleanup-failure")
-          return {
-            ...launched,
-            cleanup: async () => {
-              const result = await cleanupOwnedProcessGroup(launched.ownership);
-              if (!cleanupAllowed)
-                throw new Error("source-owned post-cleanup reporting failure");
-              return result;
-            },
-          };
-        return launched;
+        return scenario === "cleanup-failure"
+          ? withCleanupGate(launched, () => cleanupAllowed)
+          : launched;
       },
     );
     onTestFinished(async () => {
@@ -247,7 +259,10 @@ it
       expectOptionalContextFailure(scenario, result.error);
     }
     expect(await readFile(path)).toEqual(bytes);
-    if (scenario === "cleanup-failure") {
+    if (
+      scenario === "cleanup-failure" ||
+      scenario === "decoder-cleanup-failure"
+    ) {
       await expect(access(owned)).resolves.toBeUndefined();
       expect(await readFile(snapshotPath)).toEqual(bytes);
       const refused = await provider.inspect({
@@ -257,7 +272,7 @@ it
       if (refused.ok)
         throw new Error("Unreleased ownership must block a launch");
       expect(refused.error.cleanupResources).toContain(owned);
-      expect(launches).toBe(2);
+      expect(launches).toBe(scenario === "decoder-cleanup-failure" ? 1 : 2);
       await expect(provider.close()).rejects.toMatchObject({
         cleanupIncomplete: true,
       });
@@ -278,6 +293,13 @@ const expectOptionalContextFailure = (
     expect(projected).toMatchObject({
       details: { captured_output: { stdout: "basic stage diagnostic" } },
     });
+  else if (scenario === "decoder-cleanup-failure")
+    expect(projected).toMatchObject({
+      code: "cleanup_incomplete",
+      details: {
+        diagnostics: { captured_output: { stdout: "basic stage diagnostic" } },
+      },
+    });
   else if (
     scenario === "invalid-context" ||
     scenario === "cancelled" ||
@@ -295,8 +317,14 @@ const expectOptionalContextFailure = (
           ? "AnalysisCancelledError"
           : "ProviderAdapterError",
     );
-    if (scenario === "cleanup-failure")
+    if (scenario === "cleanup-failure") {
       expect(error).toBeInstanceOf(ProviderCleanupError);
+      expect(projected).toMatchObject({
+        details: {
+          partial_observation: { debugger: { status: "available" } },
+        },
+      });
+    }
   } else
     expect(projected).toMatchObject({
       category: "execution_failure",
