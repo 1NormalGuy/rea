@@ -1,3 +1,4 @@
+import type { AnalysisError } from "../../../src/domain/analysisErrorBase.js";
 import type { RecordedCrash } from "../../../src/domain/native/recordedCrash.js";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -139,6 +140,8 @@ it
     const controller = new AbortController();
     let owned = "";
     let snapshotPath = "";
+    let cleanupAllowed = false;
+    let launches = 0;
     const venv = join(root, "venv");
     const plugin = join(root, "gdbinit.py");
     await mkdir(venv);
@@ -155,6 +158,7 @@ it
             }),
       },
       async (spawn) => {
+        launches++;
         const request = requestSchema.parse(
           JSON.parse(await readFile(spawn.arguments.at(-1) ?? "", "utf8")),
         );
@@ -211,13 +215,19 @@ it
           return {
             ...launched,
             cleanup: async () => {
-              await cleanupOwnedProcessGroup(launched.ownership);
-              throw new Error("source-owned post-cleanup reporting failure");
+              const result = await cleanupOwnedProcessGroup(launched.ownership);
+              if (!cleanupAllowed)
+                throw new Error("source-owned post-cleanup reporting failure");
+              return result;
             },
           };
         return launched;
       },
     );
+    onTestFinished(async () => {
+      cleanupAllowed = true;
+      await provider.close();
+    });
     const result = await provider.inspect(
       {
         path,
@@ -234,45 +244,70 @@ it
       });
     } else {
       if (result.ok) throw new Error("Expected optional debugger failure");
-      const projected = projectAnalysisError(result.error);
-      if (scenario === "unconfigured")
-        expect(projected).toMatchObject({
-          details: { captured_output: { stdout: "basic stage diagnostic" } },
-        });
-      else if (
-        scenario === "invalid-context" ||
-        scenario === "cancelled" ||
-        scenario === "cleanup-failure"
-      ) {
-        const serialized = JSON.stringify(projected);
-        expect(serialized).toContain("basic stage diagnostic");
-        expect(serialized).toContain(
-          scenario === "cancelled" ? "ready" : "debugger stage diagnostic",
-        );
-        expect(result.error._tag).toBe(
-          scenario === "invalid-context"
-            ? "AnalysisOutputError"
-            : scenario === "cancelled"
-              ? "AnalysisCancelledError"
-              : "ProviderAdapterError",
-        );
-        if (scenario === "cleanup-failure")
-          expect(result.error).toBeInstanceOf(ProviderCleanupError);
-      } else
-        expect(projected).toMatchObject({
-          category: "execution_failure",
-          details: {
-            diagnostics: {
-              preceding_output: { stdout: "basic stage diagnostic" },
-              stderr: "debugger failed",
-            },
-          },
-        });
+      expectOptionalContextFailure(scenario, result.error);
     }
     expect(await readFile(path)).toEqual(bytes);
+    if (scenario === "cleanup-failure") {
+      await expect(access(owned)).resolves.toBeUndefined();
+      expect(await readFile(snapshotPath)).toEqual(bytes);
+      const refused = await provider.inspect({
+        path,
+        include_debugger_context: true,
+      });
+      if (refused.ok)
+        throw new Error("Unreleased ownership must block a launch");
+      expect(refused.error.cleanupResources).toContain(owned);
+      expect(launches).toBe(2);
+      await expect(provider.close()).rejects.toMatchObject({
+        cleanupIncomplete: true,
+      });
+      await expect(access(owned)).resolves.toBeUndefined();
+      cleanupAllowed = true;
+      await provider.close();
+    }
     await expect(access(owned)).rejects.toMatchObject({ code: "ENOENT" });
   },
 );
+
+const expectOptionalContextFailure = (
+  scenario: string,
+  error: AnalysisError,
+) => {
+  const projected = projectAnalysisError(error);
+  if (scenario === "unconfigured")
+    expect(projected).toMatchObject({
+      details: { captured_output: { stdout: "basic stage diagnostic" } },
+    });
+  else if (
+    scenario === "invalid-context" ||
+    scenario === "cancelled" ||
+    scenario === "cleanup-failure"
+  ) {
+    const serialized = JSON.stringify(projected);
+    expect(serialized).toContain("basic stage diagnostic");
+    expect(serialized).toContain(
+      scenario === "cancelled" ? "ready" : "debugger stage diagnostic",
+    );
+    expect(error._tag).toBe(
+      scenario === "invalid-context"
+        ? "AnalysisOutputError"
+        : scenario === "cancelled"
+          ? "AnalysisCancelledError"
+          : "ProviderAdapterError",
+    );
+    if (scenario === "cleanup-failure")
+      expect(error).toBeInstanceOf(ProviderCleanupError);
+  } else
+    expect(projected).toMatchObject({
+      category: "execution_failure",
+      details: {
+        diagnostics: {
+          preceding_output: { stdout: "basic stage diagnostic" },
+          stderr: "debugger failed",
+        },
+      },
+    });
+};
 
 const fixture = async (includeSignal = false, opaqueOwner = false) => {
   const workspace = await createTestWorkspace("rea-recorded-core-seam-");
