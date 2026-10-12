@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   decodeChainedPointer,
@@ -248,6 +248,101 @@ describe("pointer fixup tables", () => {
     });
 });
 describe("chained pointer membership", () => {
+  it("parses a dense chain once and reuses its membership for every lookup", () => {
+    const data = chainedData(1);
+    const count = 512;
+    const raw = Array.from(
+      { length: count },
+      (_, index) => BigInt(index + 1) | field(index + 1 < count ? 2n : 0n, 51),
+    );
+    for (const [index, pointer] of raw.entries())
+      data.writeBigUInt64LE(pointer, 0x4008 + index * 8);
+    const read = vi.spyOn(data, "readBigUInt64LE");
+    try {
+      const fixups = parsePointerFixups(
+        data,
+        { chained: { offset: 0, size: 128 }, binds: [], rebases: [], dylibs: [] },
+        SEGMENTS,
+        BASE,
+      );
+      const readsAfterParse = read.mock.calls.length;
+      for (const [index, pointer] of raw.entries())
+        expect(fixups.decode(BASE + 0x4008n + BigInt(index * 8), pointer)).toEqual({
+          kind: "rebase",
+          target: BASE + BigInt(index + 1),
+        });
+      expect(read.mock.calls.length).toBe(readsAfterParse);
+      expect(fixups.issues).toEqual([]);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it("preserves byte-exact unaligned producer locations", () => {
+    const data = chainedData(1);
+    data.writeUInt16LE(9, 62);
+    data.writeBigUInt64LE(0x1234n | field(2n, 51), 0x4009);
+    data.writeBigUInt64LE(0x4321n, 0x4011);
+    const fixups = parsePointerFixups(
+      data,
+      { chained: { offset: 0, size: 128 }, binds: [], rebases: [], dylibs: [] },
+      SEGMENTS,
+      BASE,
+    );
+    expect(fixups.decode(BASE + 0x4009n, data.readBigUInt64LE(0x4009))).toEqual({
+      kind: "rebase",
+      target: BASE + 0x1234n,
+    });
+    expect(fixups.decode(BASE + 0x4011n, data.readBigUInt64LE(0x4011))).toEqual({
+      kind: "rebase",
+      target: BASE + 0x4321n,
+    });
+    const plain = data.readBigUInt64LE(0x400b);
+    expect(fixups.decode(BASE + 0x400bn, plain)).toEqual({
+      kind: "rebase",
+      target: plain,
+    });
+  });
+
+  it("keeps aliased file pages correct after the membership retention budget is exhausted", () => {
+    const data = Buffer.alloc(0x8000);
+    const count = 5;
+    const starts = 28;
+    const table = starts + 4 + count * 4;
+    const imports = table + count * 24;
+    data.writeUInt32LE(starts, 4);
+    data.writeUInt32LE(imports, 8);
+    data.writeUInt32LE(imports, 12);
+    data.writeUInt32LE(1, 20);
+    data.writeUInt32LE(count, starts);
+    const segments: Segment[] = [];
+    for (let index = 0; index < count; index++) {
+      const info = table + index * 24;
+      const address = BASE + BigInt((index + 1) * 0x4000);
+      data.writeUInt32LE(info - starts, starts + 4 + index * 4);
+      data.writeUInt32LE(24, info);
+      data.writeUInt16LE(0x4000, info + 4);
+      data.writeUInt16LE(6, info + 6);
+      data.writeBigUInt64LE(address - BASE, info + 8);
+      data.writeUInt16LE(1, info + 20);
+      data.writeUInt16LE(8, info + 22);
+      segments.push({ address, size: 0x4000n, offset: 0x4000, executable: false });
+    }
+    data.writeBigUInt64LE(0x1234n, 0x4008);
+    const fixups = parsePointerFixups(
+      data,
+      { chained: { offset: 0, size: imports }, binds: [], rebases: [], dylibs: [] },
+      segments,
+      BASE,
+    );
+    for (const segment of segments)
+      expect(fixups.decode(segment.address + 8n, 0x1234n)).toEqual({
+        kind: "rebase",
+        target: BASE + 0x1234n,
+      });
+    expect(fixups.issues).toEqual([]);
+  });
+
   it("retains a valid later page after an earlier chain fails", () => {
     const data = chainedData(1);
     data.copyWithin(66, 64, 128);

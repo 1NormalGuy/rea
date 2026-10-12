@@ -197,48 +197,63 @@ interface FixupImage {
   readonly baseAddress: bigint;
 }
 
+interface ChainedPage {
+  /** One bit per byte offset, preserving even unaligned producer locations. */
+  readonly locations: Uint8Array | undefined;
+  readonly start: number;
+  readonly lastOffset: number | undefined;
+  readonly failure: string | undefined;
+}
+
 interface ChainedSegment {
   readonly segment: Segment;
   readonly format: number;
   readonly pageSize: number;
-  readonly pageCount: number;
-  readonly pageStarts: number;
+  /** A null page declares locations in an unsupported pointer format. */
+  readonly pages: ReadonlyMap<number, ChainedPage | null>;
 }
 
-/** Walk only producer-declared locations; bytes between links are not fixups. */
-const walkChainedPage = (
+/** Parse a page once; a failed tail does not invalidate established locations. */
+const readChainedPage = (
   bytes: Buffer,
-  chain: ChainedSegment,
+  chain: Omit<ChainedSegment, "pages">,
+  start: number,
   page: number,
-  targetOffset?: number,
-): boolean => {
-  const start = bytes.readUInt16LE(chain.pageStarts + page * 2);
-  if (start === 0xffff) return false;
-  if ((start & 0x8000) !== 0)
-    throw new RangeError(
-      "Multiple chained starts are not valid for 64-bit pointers",
+): ChainedPage => {
+  let locations = new Uint8Array(0);
+  let lastOffset: number | undefined;
+  let failure: string | undefined;
+  try {
+    if ((start & 0x8000) !== 0)
+      throw new RangeError(
+        "Multiple chained starts are not valid for 64-bit pointers",
+      );
+    const pageOffset = page * chain.pageSize;
+    const pageEnd = Math.min(
+      chain.pageSize,
+      Number(chain.segment.size) - pageOffset,
+      bytes.length - chain.segment.offset - pageOffset,
     );
-  const pageOffset = page * chain.pageSize;
-  const pageEnd = Math.min(
-    chain.pageSize,
-    Number(chain.segment.size) - pageOffset,
-    bytes.length - chain.segment.offset - pageOffset,
-  );
-  let at = start;
-  while (true) {
-    if (at + 8 > pageEnd)
+    if (start + 8 > pageEnd)
       throw new RangeError("Chained pointer leaves its file-backed page");
-    const offset = chain.segment.offset + pageOffset + at;
-    if (targetOffset !== undefined && offset > targetOffset) return false;
-    const raw = bytes.readBigUInt64LE(offset);
-    if (offset === targetOffset) return true;
+    // At most one eighth of this file-backed page, not one object per fixup.
+    locations = new Uint8Array(Math.ceil(pageEnd / 8));
     const generic = chain.format === 2 || chain.format === 6;
-    const next = Number(bits(raw, 51, generic ? 12 : 11)) * (generic ? 4 : 8);
-    if (next !== 0 && at + next + 8 > pageEnd)
-      throw new RangeError("Chained pointer link leaves its file-backed page");
-    if (next === 0) return false;
-    at += next;
+    let at = start;
+    while (true) {
+      locations[at >>> 3] = (locations[at >>> 3] ?? 0) | (1 << (at & 7));
+      lastOffset = at;
+      const raw = bytes.readBigUInt64LE(chain.segment.offset + pageOffset + at);
+      const next = Number(bits(raw, 51, generic ? 12 : 11)) * (generic ? 4 : 8);
+      if (next === 0) break;
+      if (at + next + 8 > pageEnd)
+        throw new RangeError("Chained pointer link leaves its file-backed page");
+      at += next;
+    }
+  } catch (cause: unknown) {
+    failure = cause instanceof Error ? cause.message : String(cause);
   }
+  return { locations, start, lastOffset, failure };
 };
 
 const chainedFixups = (
@@ -300,6 +315,11 @@ const chainedFixups = (
     );
   requireStartsRange(starts, 4 + segmentCount * 4);
   const ranges: ChainedSegment[] = [];
+  // Ordinary file-backed pages fit in one bit per input byte. Repeated or
+  // overlapping segment declarations must not multiply retained bitmap bytes.
+  // Their validated page facts remain available, with membership recomputed
+  // transiently when the file-derived retention budget is exhausted.
+  let remainingLocationBytes = Math.ceil(bytes.length / 8);
   for (let index = 0; index < segmentCount; index++) {
     const infoOffset = bytes.readUInt32LE(starts + 4 + index * 4);
     if (infoOffset === 0) continue;
@@ -320,13 +340,27 @@ const chainedFixups = (
       throw new RangeError(
         "Chained segment offset disagrees with its Mach-O layout",
       );
-    ranges.push({
+    const chain = {
       segment,
       format: bytes.readUInt16LE(info + 6),
       pageSize,
-      pageCount,
-      pageStarts: info + 22,
-    });
+    };
+    const pages = new Map<number, ChainedPage | null>();
+    for (let page = 0; page < pageCount; page++) {
+      const start = bytes.readUInt16LE(info + 22 + page * 2);
+      if (start === 0xffff) continue;
+      if (POINTER_FORMATS[chain.format] === undefined) {
+        pages.set(page, null);
+        continue;
+      }
+      const facts = readChainedPage(bytes, chain, start, page);
+      const locationBytes = facts.locations?.byteLength ?? 0;
+      if (locationBytes <= remainingLocationBytes) {
+        remainingLocationBytes -= locationBytes;
+        pages.set(page, facts);
+      } else pages.set(page, { ...facts, locations: undefined });
+    }
+    ranges.push({ ...chain, pages });
   }
   const formats = [
     ...new Set(
@@ -345,23 +379,17 @@ const chainedFixups = (
         ]
       : [],
   );
-  for (const chain of ranges) {
-    if (POINTER_FORMATS[chain.format] === undefined) continue;
-    try {
-      // Cover every declared page without allocating one record per fixup.
-      for (let page = 0; page < chain.pageCount; page++)
-        walkChainedPage(bytes, chain, page);
-    } catch (cause: unknown) {
-      issues.push(
-        issue(
-          "pointer_fixups",
-          "chained_pointer_walk_failed",
-          cause instanceof Error ? cause.message : String(cause),
-          `0x${chain.segment.address.toString(16)}`,
-        ),
-      );
-    }
-  }
+  for (const chain of ranges)
+    for (const [page, facts] of chain.pages)
+      if (facts?.failure !== undefined)
+        issues.push(
+          issue(
+            "pointer_fixups",
+            "chained_pointer_walk_failed",
+            facts.failure,
+            `0x${(chain.segment.address + BigInt(page * chain.pageSize)).toString(16)}`,
+          ),
+        );
   const failures = issues.map(({ message }) => message);
   return {
     kind: "chained",
@@ -380,10 +408,7 @@ const chainedFixups = (
       if (chain === undefined) return { kind: "rebase", target: raw };
       const within = Number(address - chain.segment.address);
       const page = Math.floor(within / chain.pageSize);
-      if (
-        page >= chain.pageCount ||
-        bytes.readUInt16LE(chain.pageStarts + page * 2) === 0xffff
-      )
+      if (!chain.pages.has(page))
         return { kind: "rebase", target: raw };
       if (POINTER_FORMATS[chain.format] === undefined)
         return {
@@ -391,15 +416,21 @@ const chainedFixups = (
           reason: `Unsupported chained pointer format ${chain.format}`,
         };
       try {
-        const found = walkChainedPage(
-          bytes,
-          chain,
-          page,
-          chain.segment.offset + within,
-        );
-        return found
-          ? decodeChainedPointer(raw, chain.format, baseAddress, imports)
-          : { kind: "rebase", target: raw };
+        const facts = chain.pages.get(page);
+        const at = within % chain.pageSize;
+        const locations =
+          facts?.locations ??
+          (facts == null
+            ? undefined
+            : readChainedPage(bytes, chain, facts.start, page).locations);
+        if (((locations?.[at >>> 3] ?? 0) & (1 << (at & 7))) !== 0)
+          return decodeChainedPointer(raw, chain.format, baseAddress, imports);
+        if (
+          facts?.failure !== undefined &&
+          (facts.lastOffset === undefined || at > facts.lastOffset)
+        )
+          throw new RangeError(facts.failure);
+        return { kind: "rebase", target: raw };
       } catch (cause: unknown) {
         const reason = cause instanceof Error ? cause.message : String(cause);
         const location = `0x${address.toString(16)}`;
