@@ -247,7 +247,7 @@ describe("pointer fixup tables", () => {
       });
     });
 });
-describe("chained pointer membership", () => {
+describe("parsed chained pointer membership", () => {
   it("parses a dense chain once and reuses its membership for every lookup", () => {
     const data = chainedData(1);
     const count = 512;
@@ -261,13 +261,20 @@ describe("chained pointer membership", () => {
     try {
       const fixups = parsePointerFixups(
         data,
-        { chained: { offset: 0, size: 128 }, binds: [], rebases: [], dylibs: [] },
+        {
+          chained: { offset: 0, size: 128 },
+          binds: [],
+          rebases: [],
+          dylibs: [],
+        },
         SEGMENTS,
         BASE,
       );
       const readsAfterParse = read.mock.calls.length;
       for (const [index, pointer] of raw.entries())
-        expect(fixups.decode(BASE + 0x4008n + BigInt(index * 8), pointer)).toEqual({
+        expect(
+          fixups.decode(BASE + 0x4008n + BigInt(index * 8), pointer),
+        ).toEqual({
           kind: "rebase",
           target: BASE + BigInt(index + 1),
         });
@@ -289,14 +296,18 @@ describe("chained pointer membership", () => {
       SEGMENTS,
       BASE,
     );
-    expect(fixups.decode(BASE + 0x4009n, data.readBigUInt64LE(0x4009))).toEqual({
-      kind: "rebase",
-      target: BASE + 0x1234n,
-    });
-    expect(fixups.decode(BASE + 0x4011n, data.readBigUInt64LE(0x4011))).toEqual({
-      kind: "rebase",
-      target: BASE + 0x4321n,
-    });
+    expect(fixups.decode(BASE + 0x4009n, data.readBigUInt64LE(0x4009))).toEqual(
+      {
+        kind: "rebase",
+        target: BASE + 0x1234n,
+      },
+    );
+    expect(fixups.decode(BASE + 0x4011n, data.readBigUInt64LE(0x4011))).toEqual(
+      {
+        kind: "rebase",
+        target: BASE + 0x4321n,
+      },
+    );
     const plain = data.readBigUInt64LE(0x400b);
     expect(fixups.decode(BASE + 0x400bn, plain)).toEqual({
       kind: "rebase",
@@ -326,12 +337,22 @@ describe("chained pointer membership", () => {
       data.writeBigUInt64LE(address - BASE, info + 8);
       data.writeUInt16LE(1, info + 20);
       data.writeUInt16LE(8, info + 22);
-      segments.push({ address, size: 0x4000n, offset: 0x4000, executable: false });
+      segments.push({
+        address,
+        size: 0x4000n,
+        offset: 0x4000,
+        executable: false,
+      });
     }
     data.writeBigUInt64LE(0x1234n, 0x4008);
     const fixups = parsePointerFixups(
       data,
-      { chained: { offset: 0, size: imports }, binds: [], rebases: [], dylibs: [] },
+      {
+        chained: { offset: 0, size: imports },
+        binds: [],
+        rebases: [],
+        dylibs: [],
+      },
       segments,
       BASE,
     );
@@ -342,7 +363,9 @@ describe("chained pointer membership", () => {
       });
     expect(fixups.issues).toEqual([]);
   });
+});
 
+describe("chained pointer membership", () => {
   it("retains a valid later page after an earlier chain fails", () => {
     const data = chainedData(1);
     data.copyWithin(66, 64, 128);

@@ -247,7 +247,9 @@ const readChainedPage = (
       const next = Number(bits(raw, 51, generic ? 12 : 11)) * (generic ? 4 : 8);
       if (next === 0) break;
       if (at + next + 8 > pageEnd)
-        throw new RangeError("Chained pointer link leaves its file-backed page");
+        throw new RangeError(
+          "Chained pointer link leaves its file-backed page",
+        );
       at += next;
     }
   } catch (cause: unknown) {
@@ -408,8 +410,7 @@ const chainedFixups = (
       if (chain === undefined) return { kind: "rebase", target: raw };
       const within = Number(address - chain.segment.address);
       const page = Math.floor(within / chain.pageSize);
-      if (!chain.pages.has(page))
-        return { kind: "rebase", target: raw };
+      if (!chain.pages.has(page)) return { kind: "rebase", target: raw };
       if (POINTER_FORMATS[chain.format] === undefined)
         return {
           kind: "unsupported",
