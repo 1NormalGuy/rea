@@ -30,6 +30,8 @@ import {
   staticInferenceEvidence,
 } from "./JavaScriptArtifactGraphEvidence.js";
 import {
+  moduleKindForJavaScriptReference,
+  moduleResolutionModeProperties,
   resolveArtifactPathByContext,
   type ArtifactPathResolution,
 } from "./JavaScriptArtifactPathResolution.js";
@@ -275,10 +277,13 @@ const resolveModuleTarget = (
     sourcePath: input.file.path,
     context: "module-specifier",
     files: input.context.filesByPath,
-    moduleKind:
+    moduleKind: moduleKindForJavaScriptReference(
+      input.file.path,
       input.link.kind === "require" || input.link.kind === "commonjs-export"
         ? "require"
-        : "import",
+        : "static-import",
+      input.link.resolutionMode,
+    ),
   });
   if (resolution.resolution_status !== "resolved")
     return {
@@ -370,6 +375,7 @@ const relationshipProperties = (
   origin?: JavaScriptModuleOrigin,
 ) => ({
   module_link_kind: link.kind,
+  ...moduleResolutionModeProperties(link.resolutionMode),
   specifier: origin?.specifier ?? link.specifier,
   imported_name: origin?.importedPath.at(-1) ?? link.importedName,
   imported_path: origin?.importedPath ?? [],
@@ -379,7 +385,9 @@ const relationshipProperties = (
   resolution_status: target?.status ?? null,
   target_file_kind: target?.file?.kind ?? null,
   target_json_status:
-    target?.file?.kind === "json" ? jsonStatus(target.file) : null,
+    target?.file?.kind === "json" || target?.file?.kind === "package-json"
+      ? jsonStatus(target.file)
+      : null,
 });
 
 const relationshipEvidence = (
@@ -421,8 +429,8 @@ const moduleFormat = (
   ir: JavaScriptModuleSemanticIr,
 ): "commonjs" | "esm" | "mixed" | "unknown" => {
   const extension = posix.extname(path).toLowerCase();
-  if (extension === ".mjs") return "esm";
-  if (extension === ".cjs") return "commonjs";
+  if (extension === ".mjs" || extension === ".mts") return "esm";
+  if (extension === ".cjs" || extension === ".cts") return "commonjs";
   const esm = ir.moduleLinks.some(({ kind }) =>
     ["import", "export", "re-export"].includes(kind),
   );
