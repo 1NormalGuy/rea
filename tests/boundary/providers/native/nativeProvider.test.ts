@@ -108,6 +108,40 @@ describe("native macOS provider discovery", () => {
     },
   );
 
+  it.each([
+    { executable: "", paths: [], newline: "\r\n", identifier: "fixture" },
+    {
+      executable: "Executable=/apps/fixture\r\n",
+      paths: [],
+      newline: "\r\n",
+      identifier: "fixture\nFormat=payload\r",
+    },
+    {
+      executable: "Executable=/apps/fixture\n",
+      paths: ["/elsewhere"],
+      newline: "\n",
+      identifier: "fixture\r\nFormat=payload\r",
+    },
+    {
+      executable: "Executable=/apps/fixture\r\n",
+      paths: ["/elsewhere"],
+      newline: "\r\n",
+      identifier: "fixture\r",
+    },
+  ])(
+    "frames the identifier without a matching executable path: %j",
+    ({ executable, paths, newline, identifier }) => {
+      const parsed = parseCodeSignature(
+        `${executable}Identifier=${identifier}${newline}Format=Mach-O thin (arm64)${newline}TeamIdentifier=not set${newline}`,
+        false,
+        paths,
+      );
+      expect(parsed.identifier).toBe(identifier);
+      expect(parsed.format).toBe("Mach-O thin (arm64)");
+      expect(parsed.team_identifier).toBeNull();
+    },
+  );
+
   it.each(["timeout", "output-limit"] as const)(
     "preserves %s resolution failures with their captured output and cleanup status",
     async (reason) => {

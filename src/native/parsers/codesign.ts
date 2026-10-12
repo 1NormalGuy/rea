@@ -65,7 +65,7 @@ const splitEchoedValues = (
   let rest = text;
   // Frame the exact source path before interpreting record separators. A CRLF
   // inside that path or the signing identifier is payload, not a line ending.
-  let newline = "\n";
+  let newline: string | undefined;
   for (const path of executablePaths) {
     const prefix = `Executable=${path}`;
     if (!text.startsWith(prefix)) continue;
@@ -83,9 +83,18 @@ const splitEchoedValues = (
     return { identifier: undefined, fields: rest };
   // Later fields come from the signature itself, so the last `Format=` line
   // is the one codesign printed after the identifier.
-  const format = rest.lastIndexOf(`${newline}Format=`);
-  const lineEnd = rest.indexOf(newline);
-  const end = format >= 0 ? format : lineEnd >= 0 ? lineEnd : rest.length;
+  const format = rest.lastIndexOf("\nFormat=");
+  // Without an exact path, use the producer-owned Format record's terminator.
+  // Looking inside Identifier instead would confuse literal CRLF payload with
+  // record framing, or strip a literal trailing CR from an LF-delimited value.
+  if (newline === undefined && format >= 0)
+    newline = /\r?\n/u.exec(rest.slice(format + 1))?.[0];
+  const boundary = format >= 0 ? format : rest.indexOf("\n");
+  const crlf = newline === undefined || newline === "\r\n";
+  const end =
+    boundary < 0
+      ? rest.length
+      : boundary - (crlf && rest[boundary - 1] === "\r" ? 1 : 0);
   return {
     identifier: rest.slice("Identifier=".length, end),
     fields: rest.slice(end),
